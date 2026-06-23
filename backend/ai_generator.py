@@ -10,7 +10,7 @@ class AIGenerator:
 Tool Usage:
 - **search_course_content**: Use for questions about specific course content or detailed educational materials
 - **get_course_outline**: Use for questions about course structure, syllabus, or what lessons a course contains (e.g. "what lessons are in X?", "give me an outline of X", "what does X cover?")
-- **One tool call per query maximum**
+- **You may make up to 2 sequential tool calls if the first result is insufficient to fully answer the question**
 - Synthesize tool results into accurate, fact-based responses
 - If a tool yields no results, state this clearly without offering alternatives
 
@@ -85,58 +85,60 @@ Provide only the direct answer to what was asked.
         
         # Handle tool execution if needed
         if response.stop_reason == "tool_use" and tool_manager:
-            return self._handle_tool_execution(response, api_params, tool_manager)
-        
+            return self._run_tool_loop(response, api_params, tool_manager)
+
         # Return direct response
         return response.content[0].text
-    
-    def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
-        """
-        Handle execution of tool calls and get follow-up response.
-        
-        Args:
-            initial_response: The response containing tool use requests
-            base_params: Base API parameters
-            tool_manager: Manager to execute tools
-            
-        Returns:
-            Final response text after tool execution
-        """
-        # Start with existing messages
-        messages = base_params["messages"].copy()
-        
-        # Add AI's tool use response
-        messages.append({"role": "assistant", "content": initial_response.content})
-        
-        # Execute all tool calls and collect results
-        tool_results = []
-        for content_block in initial_response.content:
-            if content_block.type == "tool_use":
-                tool_result = tool_manager.execute_tool(
-                    content_block.name, 
-                    **content_block.input
-                )
-                
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": content_block.id,
-                    "content": tool_result
-                })
-        
-        # Add tool results as single message
-        if tool_results:
+
+    def _run_tool_loop(self, initial_response, api_params: Dict[str, Any], tool_manager) -> str:
+        messages = api_params["messages"].copy()
+        current_response = initial_response
+        last_text = None
+        error_occurred = False
+
+        for _ in range(2):
+            messages.append({"role": "assistant", "content": current_response.content})
+
+            tool_results = []
+            for block in current_response.content:
+                if block.type == "tool_use":
+                    try:
+                        result = tool_manager.execute_tool(block.name, **block.input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+                    except Exception as e:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": f"Tool execution failed: {str(e)}",
+                        })
+                        error_occurred = True
+                        break
+
             messages.append({"role": "user", "content": tool_results})
-        
-        # Prepare final API call — tools must be included so the API accepts a
-        # message history that contains tool_use blocks.
-        final_params = {
-            **self.base_params,
-            "messages": messages,
-            "system": base_params["system"],
-        }
-        if "tools" in base_params:
-            final_params["tools"] = base_params["tools"]
-        
-        # Get final response
-        final_response = self.client.messages.create(**final_params)
-        return final_response.content[0].text
+
+            if error_occurred:
+                break
+
+            # tools must be included so the API accepts message history with tool_use blocks
+            next_params = {
+                **self.base_params,
+                "messages": messages,
+                "system": api_params["system"],
+                "tools": api_params["tools"],
+                "tool_choice": api_params["tool_choice"],
+            }
+            current_response = self.client.messages.create(**next_params)
+
+            if current_response.stop_reason != "tool_use":
+                return current_response.content[0].text
+
+            for block in current_response.content:
+                if block.type == "text":
+                    last_text = block.text
+                    break
+
+        return last_text or "Unable to generate a response."

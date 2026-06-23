@@ -1,11 +1,11 @@
 """
 Tests for AIGenerator in ai_generator.py.
 
-Key regression being tested: _handle_tool_execution() must include the 'tools'
-parameter in the final Anthropic API call. The Anthropic API rejects requests
-where the message history contains tool_use blocks but tools are not defined —
-this causes a 400/exception that propagates as HTTP 500 and the frontend shows
-'query failed'.
+Key regression being tested: _run_tool_loop() must include the 'tools'
+parameter in every follow-up Anthropic API call. The Anthropic API rejects
+requests where the message history contains tool_use blocks but tools are not
+defined — this causes a 400/exception that propagates as HTTP 500 and the
+frontend shows 'query failed'.
 """
 import pytest
 from unittest.mock import MagicMock, patch
@@ -200,3 +200,62 @@ class TestToolExecution:
         result = gen.generate_response(query="question", tools=DUMMY_TOOLS, tool_manager=mock_tm)
 
         assert result == "The model result."
+
+
+class TestSequentialToolExecution:
+    def test_two_sequential_tool_rounds_makes_three_api_calls(self):
+        gen = make_generator()
+        gen.client.messages.create.side_effect = [
+            tool_use_response(tool_id="toolu_r1"),
+            tool_use_response(tool_id="toolu_r2"),
+            text_response("Final synthesized answer"),
+        ]
+        mock_tm = MagicMock()
+        mock_tm.execute_tool.return_value = "search result"
+
+        result = gen.generate_response(query="compare courses", tools=DUMMY_TOOLS, tool_manager=mock_tm)
+
+        assert gen.client.messages.create.call_count == 3
+        assert mock_tm.execute_tool.call_count == 2
+        assert result == "Final synthesized answer"
+
+    def test_early_exit_after_first_tool_round(self):
+        gen = make_generator()
+        gen.client.messages.create.side_effect = [
+            tool_use_response(),
+            text_response("Early exit answer"),
+        ]
+        mock_tm = MagicMock()
+        mock_tm.execute_tool.return_value = "results"
+
+        result = gen.generate_response(query="question", tools=DUMMY_TOOLS, tool_manager=mock_tm)
+
+        assert gen.client.messages.create.call_count == 2
+        assert result == "Early exit answer"
+
+    def test_tool_error_returns_gracefully_without_extra_api_calls(self):
+        gen = make_generator()
+        gen.client.messages.create.return_value = tool_use_response()
+        mock_tm = MagicMock()
+        mock_tm.execute_tool.side_effect = RuntimeError("DB timeout")
+
+        result = gen.generate_response(query="question", tools=DUMMY_TOOLS, tool_manager=mock_tm)
+
+        assert gen.client.messages.create.call_count == 1
+        assert mock_tm.execute_tool.call_count == 1
+        assert isinstance(result, str) and len(result) > 0
+
+    def test_round_cap_stops_at_three_total_api_calls(self):
+        gen = make_generator()
+        gen.client.messages.create.side_effect = [
+            tool_use_response(tool_id="toolu_r1"),
+            tool_use_response(tool_id="toolu_r2"),
+            tool_use_response(tool_id="toolu_r3"),
+        ]
+        mock_tm = MagicMock()
+        mock_tm.execute_tool.return_value = "results"
+
+        result = gen.generate_response(query="question", tools=DUMMY_TOOLS, tool_manager=mock_tm)
+
+        assert gen.client.messages.create.call_count == 3
+        assert isinstance(result, str) and len(result) > 0
