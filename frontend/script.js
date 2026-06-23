@@ -7,6 +7,30 @@ let currentSessionId = null;
 // DOM elements
 let chatMessages, chatInput, sendButton, totalCourses, courseTitles;
 
+// Theme Management
+function initTheme() {
+    const saved = localStorage.getItem('theme');
+    const preferred = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-theme', preferred);
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+}
+
+// Initialize theme before paint to avoid flash
+initTheme();
+
+// Follow OS theme changes only when the user hasn't set a manual preference
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+    if (!localStorage.getItem('theme')) {
+        document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+    }
+});
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   chatMessages = document.getElementById('chatMessages');
@@ -14,6 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
   sendButton = document.getElementById('sendButton');
   totalCourses = document.getElementById('totalCourses');
   courseTitles = document.getElementById('courseTitles');
+
+  document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 
   setupEventListeners();
   createNewSession();
